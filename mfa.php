@@ -1,1130 +1,202 @@
 <?php
+require_once 'config.php';
+require_once 'security.php';
+require_once __DIR__ . '/includes/phpmailer/src/Exception.php';
+require_once __DIR__ . '/includes/phpmailer/src/PHPMailer.php';
+require_once __DIR__ . '/includes/phpmailer/src/SMTP.php';
 
-declare(strict_types=1);
-
-require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/security.php';
-
-/*
-|--------------------------------------------------------------------------
-| LOAD PHPMailer
-|--------------------------------------------------------------------------
-*/
-
-$composerAutoload = __DIR__ . '/vendor/autoload.php';
-
-if (file_exists($composerAutoload)) {
-
-    require_once $composerAutoload;
-
-} else {
-
-    $phpMailerPath = __DIR__ . '/includes/PHPMailer/src/';
-
-    if (
-        file_exists($phpMailerPath . 'Exception.php') &&
-        file_exists($phpMailerPath . 'PHPMailer.php') &&
-        file_exists($phpMailerPath . 'SMTP.php')
-    ) {
-        require_once $phpMailerPath . 'Exception.php';
-        require_once $phpMailerPath . 'PHPMailer.php';
-        require_once $phpMailerPath . 'SMTP.php';
-    }
-}
-
-use PHPMailer\PHPMailer\Exception;
 use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
 
+$env = parse_ini_file(__DIR__ . '/.env');
 
-/*
-|--------------------------------------------------------------------------
-| GENERATE OTP
-|--------------------------------------------------------------------------
-|
-| Generates a cryptographically secure six-digit OTP.
-|
-*/
+if (!$env) {
+    error_log("Failed to load .env file");
+    die("Configuration error. Please contact support.");
+}
 
-function generate_otp(): string
+define('TELERIVET_API_KEY', $env['TELERIVET_API_KEY']);
+define('TELERIVET_PROJECT_ID', $env['TELERIVET_PROJECT_ID']);
+define('TELERIVET_PHONE_ID', $env['TELERIVET_PHONE_ID']);
+
+define('MAIL_HOST', 'smtp.gmail.com');
+define('MAIL_USERNAME', $env['MAIL_USERNAME']);
+define('MAIL_PASSWORD', $env['MAIL_PASSWORD']);
+define('MAIL_PORT', 587);
+define('MAIL_FROM', $env['MAIL_USERNAME']);
+define('MAIL_FROM_NAME', 'SecureBank Inc.');
+
+// Create a secure OTP.
+function generate_otp()
 {
-    return (string) random_int(100000, 999999);
+    return str_pad(random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| STORE OTP
-|--------------------------------------------------------------------------
-|
-| Invalidates previous unused OTPs before storing the new one.
-|
-*/
-
-function store_otp(
-    int $userId,
-    string $otp
-): bool {
-
-    global $pdo;
-
-    /*
-    |--------------------------------------------------------------------------
-    | Invalidate previous unused OTPs
-    |--------------------------------------------------------------------------
-    */
-
-    $stmt = $pdo->prepare(
-        'UPDATE mfa_codes
-         SET is_used = TRUE
-         WHERE user_id = ?
-         AND is_used = FALSE'
-    );
-
-    $stmt->execute([
-        $userId
-    ]);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Calculate expiration time
-    |--------------------------------------------------------------------------
-    */
-
-    $expiresAt = date(
-        'Y-m-d H:i:s',
-        time() + OTP_EXPIRATION
-    );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Insert new OTP
-    |--------------------------------------------------------------------------
-    */
-
-    $stmt = $pdo->prepare(
-        'INSERT INTO mfa_codes
-        (
-            user_id,
-            otp_code,
-            expires_at,
-            is_used
-        )
-        VALUES (?, ?, ?, FALSE)'
-    );
-
-    return $stmt->execute([
-        $userId,
-        $otp,
-        $expiresAt
-    ]);
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| GET PENDING MFA USER
-|--------------------------------------------------------------------------
-|
-| Retrieves the user who is currently waiting for MFA verification.
-|
-*/
-
-function get_pending_mfa_user(): ?array
+// Store the OTP and invalidate older codes.
+function store_otp($user_id, $otp)
 {
     global $pdo;
 
-    if (!isset($_SESSION['mfa_pending_user_id'])) {
-        return null;
-    }
-
-    $userId = (int) $_SESSION['mfa_pending_user_id'];
-
-    if ($userId <= 0) {
-        return null;
-    }
-
-    $stmt = $pdo->prepare(
-        'SELECT
-            id,
-            username,
-            email,
-            phone_number,
-            is_mfa_enabled,
-            mfa_method
-         FROM users
-         WHERE id = ?
-         LIMIT 1'
-    );
-
-    $stmt->execute([
-        $userId
-    ]);
-
-    $user = $stmt->fetch();
-
-    return $user ?: null;
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| SEND OTP BY EMAIL
-|--------------------------------------------------------------------------
-|
-*/
-
-function send_otp_email(
-    string $email,
-    string $username,
-    string $otp
-): bool {
-
-    /*
-    |--------------------------------------------------------------------------
-    | Check required configuration
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-        !defined('MAIL_HOST') ||
-        !defined('MAIL_PORT') ||
-        !defined('MAIL_USERNAME') ||
-        !defined('MAIL_PASSWORD') ||
-        !defined('MAIL_FROM_ADDRESS') ||
-        !defined('MAIL_FROM_NAME')
-    ) {
-
-        error_log(
-            'MFA email error: Mail configuration constants are missing.'
-        );
-
-        return false;
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Check PHPMailer availability
-    |--------------------------------------------------------------------------
-    */
-
-    if (!class_exists(PHPMailer::class)) {
-
-        error_log(
-            'MFA email error: PHPMailer is not available.'
-        );
-
-        return false;
-    }
-
-
-    $mail = new PHPMailer(true);
-
-    try {
-
-        /*
-        |--------------------------------------------------------------------------
-        | SMTP configuration
-        |--------------------------------------------------------------------------
-        */
-
-        $mail->isSMTP();
-
-        $mail->Host = MAIL_HOST;
-
-        $mail->SMTPAuth = true;
-
-        $mail->Username = MAIL_USERNAME;
-
-        $mail->Password = MAIL_PASSWORD;
-
-        $mail->SMTPSecure =
-            PHPMailer::ENCRYPTION_STARTTLS;
-
-        $mail->Port = MAIL_PORT;
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Sender
-        |--------------------------------------------------------------------------
-        */
-
-        $mail->setFrom(
-            MAIL_FROM_ADDRESS,
-            MAIL_FROM_NAME
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Recipient
-        |--------------------------------------------------------------------------
-        */
-
-        $mail->addAddress(
-            $email,
-            $username
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Email content
-        |--------------------------------------------------------------------------
-        */
-
-        $mail->isHTML(true);
-
-        $mail->Subject =
-            'SecureBank - Your One-Time Password';
-
-        $safeUsername = encode_output($username);
-        $safeOtp = encode_output($otp);
-
-        $mail->Body = '
-            <html>
-            <body>
-
-                <h2>SecureBank</h2>
-
-                <p>
-                    Hello ' . $safeUsername . ',
-                </p>
-
-                <p>
-                    Your SecureBank verification code is:
-                </p>
-
-                <h1 style="letter-spacing: 5px;">
-                    ' . $safeOtp . '
-                </h1>
-
-                <p>
-                    This OTP will expire in
-                    <strong>5 minutes</strong>.
-                </p>
-
-                <p>
-                    Do not share this code with anyone.
-                </p>
-
-                <p>
-                    If you did not attempt to log in,
-                    please secure your account immediately.
-                </p>
-
-                <p>
-                    SecureBank Security Team
-                </p>
-
-            </body>
-            </html>
-        ';
-
-        $mail->AltBody =
-            'Your SecureBank OTP is: ' .
-            $otp .
-            '. It expires in 5 minutes.';
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Send email
-        |--------------------------------------------------------------------------
-        */
-
-        $mail->send();
-
-        return true;
-
-    } catch (Exception $e) {
-
-        error_log(
-            'PHPMailer error: ' .
-            $mail->ErrorInfo
-        );
-
-        return false;
-    }
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| SEND OTP BY SMS USING TELERIVET
-|--------------------------------------------------------------------------
-|
-*/
-
-function send_otp_sms(
-    string $phoneNumber,
-    string $otp
-): bool {
-
-    /*
-    |--------------------------------------------------------------------------
-    | Check Telerivet configuration
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-        !defined('TELERIVET_API_KEY') ||
-        !defined('TELERIVET_PROJECT_ID') ||
-        TELERIVET_API_KEY === '' ||
-        TELERIVET_PROJECT_ID === ''
-    ) {
-
-        error_log(
-            'Telerivet error: API key or project ID is not configured.'
-        );
-
-        return false;
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Normalize Philippine phone number
-    |--------------------------------------------------------------------------
-    |
-    | Example:
-    |
-    | 09123456789
-    |
-    | becomes:
-    |
-    | +639123456789
-    |
-    */
-
-    $phoneNumber = trim($phoneNumber);
-
-    if ($phoneNumber === '') {
-
-        error_log(
-            'Telerivet error: Phone number is empty.'
-        );
-
-        return false;
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Remove spaces, dashes and parentheses
-    |--------------------------------------------------------------------------
-    */
-
-    $phoneNumber = preg_replace(
-        '/[\s\-\(\)]/',
-        '',
-        $phoneNumber
-    );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Convert Philippine local format
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-        strlen($phoneNumber) === 11 &&
-        substr($phoneNumber, 0, 1) === '0'
-    ) {
-
-        $phoneNumber =
-            '+63' .
-            substr($phoneNumber, 1);
-
-    } elseif (
-        strlen($phoneNumber) === 10 &&
-        substr($phoneNumber, 0, 1) === '9'
-    ) {
-
-        $phoneNumber =
-            '+63' .
-            $phoneNumber;
-
-    } elseif (
-        substr($phoneNumber, 0, 2) === '63'
-    ) {
-
-        $phoneNumber =
-            '+' .
-            $phoneNumber;
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Telerivet API URL
-    |--------------------------------------------------------------------------
-    |
-    | IMPORTANT:
-    | This must be a normal URL.
-    | Do NOT put Markdown links inside this string.
-    |
-    */
-
-    $url =
-        'https://api.telerivet.com/v1/projects/' .
-        rawurlencode(TELERIVET_PROJECT_ID) .
-        '/messages/send';
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | SMS payload
-    |--------------------------------------------------------------------------
-    */
-
-    $payload = [
-        'content' =>
-            'Your SecureBank OTP: ' . $otp .
-            '. It expires in 5 minutes.',
-
-        'to_number' =>
-            $phoneNumber
-    ];
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Initialize CURL
-    |--------------------------------------------------------------------------
-    */
-
-    $ch = curl_init($url);
-
-    if ($ch === false) {
-
-        error_log(
-            'Telerivet error: Unable to initialize CURL.'
-        );
-
-        return false;
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | CURL configuration
-    |--------------------------------------------------------------------------
-    */
-
-    curl_setopt_array(
-        $ch,
-        [
-            CURLOPT_POST => true,
-
-            CURLOPT_RETURNTRANSFER => true,
-
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'Accept: application/json'
-            ],
-
-            CURLOPT_USERPWD =>
-                TELERIVET_API_KEY . ':',
-
-            CURLOPT_POSTFIELDS =>
-                json_encode($payload),
-
-            CURLOPT_TIMEOUT => 30,
-
-            CURLOPT_CONNECTTIMEOUT => 10
-        ]
-    );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Execute request
-    |--------------------------------------------------------------------------
-    */
-
-    $response = curl_exec($ch);
-
-    $httpCode =
-        curl_getinfo(
-            $ch,
-            CURLINFO_HTTP_CODE
-        );
-
-    $curlError = curl_error($ch);
-
-    curl_close($ch);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | CURL failure
-    |--------------------------------------------------------------------------
-    */
-
-    if ($response === false) {
-
-        error_log(
-            'Telerivet CURL error: ' .
-            $curlError
-        );
-
-        return false;
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | HTTP failure
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-        $httpCode < 200 ||
-        $httpCode >= 300
-    ) {
-
-        error_log(
-            'Telerivet HTTP error: ' .
-            $httpCode .
-            ' Response: ' .
-            $response
-        );
-
-        return false;
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | SMS successfully submitted
-    |--------------------------------------------------------------------------
-    */
+    $stmt = $pdo->prepare("
+        UPDATE mfa_codes SET is_used = TRUE
+        WHERE user_id = ? AND is_used = FALSE
+    ");
+    $stmt->execute([$user_id]);
+
+    $stmt = $pdo->prepare("
+        INSERT INTO mfa_codes (user_id, otp_code, expires_at, is_used)
+        VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE), FALSE)
+    ");
+    $stmt->execute([$user_id, $otp, OTP_EXPIRY_MINUTES]);
 
     return true;
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| VERIFY OTP
-|--------------------------------------------------------------------------
-|
-*/
-
-function verify_otp(
-    int $userId,
-    string $submittedOtp
-): array {
-
+// Verify the OTP and enforce attempt limits.
+function verify_otp($user_id, $submitted_otp)
+{
     global $pdo;
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | Verify MFA session belongs to the same user
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-        !isset($_SESSION['mfa_pending_user_id']) ||
-        (int) $_SESSION['mfa_pending_user_id'] !== $userId
-    ) {
-
-        return [
-            'success' => false,
-            'message' => 'Invalid MFA session.'
-        ];
+    if (!isset($_SESSION['otp_attempts'])) {
+        $_SESSION['otp_attempts'] = 0;
     }
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | Make sure user ID is valid
-    |--------------------------------------------------------------------------
-    */
-
-    if ($userId <= 0) {
-
-        return [
-            'success' => false,
-            'message' => 'Invalid user account.'
-        ];
+    if ($_SESSION['otp_attempts'] >= OTP_MAX_ATTEMPTS) {
+        return ['success' => false, 'message' => 'Too many failed attempts. Please log in again.', 'lockout' => true];
     }
 
+    $stmt = $pdo->prepare("
+        SELECT * FROM mfa_codes
+        WHERE user_id = ?
+          AND is_used = FALSE
+          AND expires_at > NOW()
+        ORDER BY created_at DESC
+        LIMIT 1
+    ");
+    $stmt->execute([$user_id]);
+    $record = $stmt->fetch();
 
-    /*
-    |--------------------------------------------------------------------------
-    | Check lockout
-    |--------------------------------------------------------------------------
-    */
-
-    $lockedUntil =
-        (int) (
-            $_SESSION['otp_locked_until'] ?? 0
-        );
-
-    if ($lockedUntil > time()) {
-
-        $remaining =
-            $lockedUntil - time();
-
-        return [
-            'success' => false,
-            'message' =>
-                'Too many failed attempts. ' .
-                'Please wait ' .
-                $remaining .
-                ' seconds before trying again.'
-        ];
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Validate OTP format
-    |--------------------------------------------------------------------------
-    */
-
-    $submittedOtp = trim($submittedOtp);
-
-    if (
-        !preg_match(
-            '/^[0-9]{6}$/',
-            $submittedOtp
-        )
-    ) {
-
-        return [
-            'success' => false,
-            'message' =>
-                'OTP must contain exactly 6 digits.'
-        ];
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Find latest unused OTP
-    |--------------------------------------------------------------------------
-    */
-
-    $stmt = $pdo->prepare(
-        'SELECT *
-         FROM mfa_codes
-         WHERE user_id = ?
-         AND is_used = FALSE
-         ORDER BY id DESC
-         LIMIT 1'
-    );
-
-    $stmt->execute([
-        $userId
-    ]);
-
-    $otpRecord = $stmt->fetch();
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | No OTP found
-    |--------------------------------------------------------------------------
-    */
-
-    if (!$otpRecord) {
-
-        return [
-            'success' => false,
-            'message' =>
-                'No active OTP was found. ' .
-                'Please request a new OTP.'
-        ];
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Check OTP expiration
-    |--------------------------------------------------------------------------
-    */
-
-    $expiresAt =
-        strtotime(
-            (string) $otpRecord['expires_at']
-        );
-
-    if (
-        $expiresAt === false ||
-        $expiresAt < time()
-    ) {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Mark expired OTP as used
-        |--------------------------------------------------------------------------
-        */
-
-        $stmt = $pdo->prepare(
-            'UPDATE mfa_codes
-             SET is_used = TRUE
-             WHERE id = ?'
-        );
-
-        $stmt->execute([
-            (int) $otpRecord['id']
-        ]);
-
-        return [
-            'success' => false,
-            'message' =>
-                'This OTP has expired. ' .
-                'Please request a new OTP.'
-        ];
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Compare OTP securely
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-        !hash_equals(
-            (string) $otpRecord['otp_code'],
-            $submittedOtp
-        )
-    ) {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Initialize attempt counter
-        |--------------------------------------------------------------------------
-        */
-
-        if (!isset($_SESSION['otp_attempts'])) {
-
-            $_SESSION['otp_attempts'] = 0;
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Increase failed attempts
-        |--------------------------------------------------------------------------
-        */
-
+    if (!$record) {
         $_SESSION['otp_attempts']++;
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Check maximum attempts
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            $_SESSION['otp_attempts'] >=
-            OTP_MAX_ATTEMPTS
-        ) {
-
-            $_SESSION['otp_locked_until'] =
-                time() + 300;
-
-            $_SESSION['otp_attempts'] = 0;
-
-            return [
-                'success' => false,
-                'message' =>
-                    'Maximum OTP attempts reached. ' .
-                    'Your verification is temporarily locked ' .
-                    'for 5 minutes.'
-            ];
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Calculate remaining attempts
-        |--------------------------------------------------------------------------
-        */
-
-        $remainingAttempts =
-            OTP_MAX_ATTEMPTS -
-            $_SESSION['otp_attempts'];
-
-        return [
-            'success' => false,
-            'message' =>
-                'Incorrect OTP. You have ' .
-                $remainingAttempts .
-                ' attempt(s) remaining.'
-        ];
+        return ['success' => false, 'message' => 'OTP has expired or is invalid. Please request a new one.'];
     }
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | OTP is correct
-    |--------------------------------------------------------------------------
-    */
-
-    $stmt = $pdo->prepare(
-        'UPDATE mfa_codes
-         SET is_used = TRUE
-         WHERE id = ?'
-    );
-
-    $stmt->execute([
-        (int) $otpRecord['id']
-    ]);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Reset OTP attempts
-    |--------------------------------------------------------------------------
-    */
-
-    $_SESSION['otp_attempts'] = 0;
-
-    $_SESSION['otp_locked_until'] = 0;
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Complete authentication
-    |--------------------------------------------------------------------------
-    */
-
-    require_once __DIR__ . '/auth.php';
-
-    if (!complete_mfa_login($userId)) {
-
-        return [
-            'success' => false,
-            'message' =>
-                'Unable to complete login.'
-        ];
+    if ($record['otp_code'] !== $submitted_otp) {
+        $_SESSION['otp_attempts']++;
+        $remaining = OTP_MAX_ATTEMPTS - $_SESSION['otp_attempts'];
+        return ['success' => false, 'message' => "Incorrect OTP. $remaining attempt(s) remaining."];
     }
 
+    $stmt = $pdo->prepare("UPDATE mfa_codes SET is_used = TRUE WHERE id = ?");
+    $stmt->execute([$record['id']]);
 
-    /*
-    |--------------------------------------------------------------------------
-    | MFA successful
-    |--------------------------------------------------------------------------
-    */
+    unset($_SESSION['otp_attempts']);
 
-    return [
-        'success' => true,
-        'message' =>
-            'MFA verification successful.'
-    ];
+    return ['success' => true, 'message' => 'OTP verified successfully.'];
 }
 
+// Send an OTP by email.
+function send_otp_email($email, $otp)
+{
+    $mail = new PHPMailer(true);
 
-/*
-|--------------------------------------------------------------------------
-| CREATE AND SEND OTP
-|--------------------------------------------------------------------------
-|
-*/
+    try {
+        $mail->isSMTP();
+        $mail->Host = MAIL_HOST;
+        $mail->SMTPAuth = true;
+        $mail->Username = MAIL_USERNAME;
+        $mail->Password = MAIL_PASSWORD;
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = MAIL_PORT;
 
-function create_and_send_otp(
-    int $userId
-): array {
+        $mail->setFrom(MAIL_FROM, MAIL_FROM_NAME);
+        $mail->addAddress($email);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Get pending MFA user
-    |--------------------------------------------------------------------------
-    */
+        $mail->isHTML(true);
+        $mail->Subject = 'SecureBank - Your One-Time Password';
+        $mail->Body = '
+                <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; border: 1px solid #ddd;">
+                    <div style="background: #CC0000; padding: 20px; text-align: center;">
+                        <h2 style="color: #ffffff; margin: 0; font-size: 20px;">SecureBank Inc.</h2>
+                        <p style="color: rgba(255,255,255,0.8); margin: 4px 0 0; font-size: 13px;">Online Banking Portal</p>
+                    </div>
+                    <div style="padding: 30px; background: #fff;">
+                        <p style="font-size: 14px; color: #222;">Hello,</p>
+                        <p style="font-size: 14px; color: #222;">Your One-Time Password (OTP) for SecureBank login is:</p>
+                        <div style="background: #f5f5f5; border-left: 4px solid #CC0000; padding: 16px; text-align: center; margin: 20px 0;">
+                            <span style="font-size: 36px; font-weight: bold; letter-spacing: 10px; color: #CC0000;">' . $otp . '</span>
+                        </div>
+                        <p style="font-size: 13px; color: #666;">This code expires in <strong>' . OTP_EXPIRY_MINUTES . ' minutes</strong>. Do not share this with anyone.</p>
+                        <p style="font-size: 13px; color: #999;">If you did not request this, please contact SecureBank support immediately.</p>
+                    </div>
+                    <div style="background: #f5f5f5; padding: 12px; text-align: center; font-size: 11px; color: #999;">
+                        &copy; ' . date('Y') . ' SecureBank Inc. All rights reserved.
+                    </div>
+                </div>
+            ';
+        $mail->AltBody = "Your SecureBank OTP is: $otp. Valid for " . OTP_EXPIRY_MINUTES . " minutes.";
 
-    $user = get_pending_mfa_user();
+        $mail->send();
+        return ['success' => true, 'message' => 'OTP sent to your email.'];
 
-    if (
-        !$user ||
-        (int) $user['id'] !== $userId
-    ) {
-
-        return [
-            'success' => false,
-            'message' =>
-                'Invalid MFA session.'
-        ];
+    } catch (Exception $e) {
+        error_log("PHPMailer Error: " . $mail->ErrorInfo);
+        return ['success' => false, 'message' => 'Failed to send email OTP. Please try again.'];
     }
+}
 
+// Send an OTP by SMS.
+function send_otp_sms($phone_number, $otp)
+{
+    $message = "Your SecureBank OTP: $otp. Valid for " . OTP_EXPIRY_MINUTES . " minutes. Do not share this code.";
 
-    /*
-    |--------------------------------------------------------------------------
-    | Check MFA is enabled
-    |--------------------------------------------------------------------------
-    */
+    $url = "https://api.telerivet.com/v1/projects/" . TELERIVET_PROJECT_ID . "/messages/send";
+    $payload = json_encode([
+        'to_number' => $phone_number,
+        'content' => $message,
+        'phone_id' => TELERIVET_PHONE_ID,
+    ]);
 
-    if (!(bool) $user['is_mfa_enabled']) {
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Content-Length: ' . strlen($payload),
+        ],
+        CURLOPT_USERPWD => TELERIVET_API_KEY . ':',
+        CURLOPT_TIMEOUT => 15,
+    ]);
 
-        return [
-            'success' => false,
-            'message' =>
-                'MFA is not enabled for this account.'
-        ];
+    $response = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($http_code === 200 || $http_code === 201) {
+        return ['success' => true, 'message' => 'OTP sent to your phone via SMS.'];
+    } else {
+        error_log("Telerivet Error: HTTP $http_code — $response");
+        return ['success' => false, 'message' => 'Failed to send SMS OTP. Please try again.'];
     }
+}
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | Check MFA method
-    |--------------------------------------------------------------------------
-    */
-
-    $method = $user['mfa_method'];
-
-    if (
-        !in_array(
-            $method,
-            ['email', 'sms'],
-            true
-        )
-    ) {
-
-        return [
-            'success' => false,
-            'message' =>
-                'No valid MFA method is configured.'
-        ];
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Generate OTP
-    |--------------------------------------------------------------------------
-    */
-
+// Generate and send an OTP.
+function send_otp($user_id, $method, $email, $phone)
+{
     $otp = generate_otp();
+    $stored = store_otp($user_id, $otp);
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | Store OTP
-    |--------------------------------------------------------------------------
-    */
-
-    if (!store_otp($userId, $otp)) {
-
-        return [
-            'success' => false,
-            'message' =>
-                'Unable to create OTP.'
-        ];
+    if (!$stored) {
+        return ['success' => false, 'message' => 'Failed to generate OTP. Please try again.'];
     }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Send OTP
-    |--------------------------------------------------------------------------
-    */
-
-    $sent = false;
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | EMAIL
-    |--------------------------------------------------------------------------
-    */
 
     if ($method === 'email') {
-
-        if (
-            empty($user['email']) ||
-            !filter_var(
-                $user['email'],
-                FILTER_VALIDATE_EMAIL
-            )
-        ) {
-
-            return [
-                'success' => false,
-                'message' =>
-                    'The account does not have a valid email address.'
-            ];
-        }
-
-        $sent = send_otp_email(
-            $user['email'],
-            $user['username'],
-            $otp
-        );
+        return send_otp_email($email, $otp);
+    } elseif ($method === 'sms') {
+        return send_otp_sms($phone, $otp);
+    } else {
+        return ['success' => false, 'message' => 'Invalid MFA method.'];
     }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | SMS
-    |--------------------------------------------------------------------------
-    */
-
-    elseif ($method === 'sms') {
-
-        if (
-            empty($user['phone_number'])
-        ) {
-
-            return [
-                'success' => false,
-                'message' =>
-                    'The account does not have a phone number.'
-            ];
-        }
-
-        $sent = send_otp_sms(
-            $user['phone_number'],
-            $otp
-        );
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Sending failed
-    |--------------------------------------------------------------------------
-    */
-
-    if (!$sent) {
-
-        return [
-            'success' => false,
-            'message' =>
-                'The OTP could not be sent. ' .
-                'Check your MFA configuration.'
-        ];
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Record OTP send time
-    |--------------------------------------------------------------------------
-    */
-
-    $_SESSION['otp_sent_at'] = time();
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Success
-    |--------------------------------------------------------------------------
-    */
-
-    return [
-        'success' => true,
-        'message' =>
-            'A verification code has been sent.'
-    ];
 }

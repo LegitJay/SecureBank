@@ -1,439 +1,208 @@
 <?php
+require_once 'config.php';
+require_once 'security.php';
+require_once 'auth.php';
+require_once 'mfa.php';
 
-declare(strict_types=1);
-
-require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/security.php';
-require_once __DIR__ . '/auth.php';
-
-$message = '';
-$messageType = '';
-
-$activeForm = 'login';
-
-if (isset($_GET['register'])) {
-    $activeForm = 'register';
+// Redirect active sessions.
+if (isset($_SESSION['logged_in']) && !isset($_SESSION['mfa_pending'])) {
+    header("Location: dashboard.php");
+    exit();
 }
 
+$error = '';
+$success = '';
+$mode = isset($_GET['mode']) && $_GET['mode'] === 'register' ? 'register' : 'login';
 
-/*
-|--------------------------------------------------------------------------
-| LOGIN
-|--------------------------------------------------------------------------
-*/
+// Show redirect status.
+if (isset($_GET['message']) && $_GET['message'] === 'logged_out') {
+    $success = 'You have been logged out successfully.';
+}
+if (isset($_GET['error']) && $_GET['error'] === 'session_expired') {
+    $error = 'Your session has expired. Please log in again.';
+}
 
-if (
-    $_SERVER['REQUEST_METHOD'] === 'POST' &&
-    isset($_POST['login'])
-) {
+// Handle login.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'login') {
 
-    $activeForm = 'login';
-
-    /*
-    |----------------------------------------------------------------------
-    | CSRF VALIDATION
-    |----------------------------------------------------------------------
-    */
-
-    $csrfToken = $_POST['csrf_token'] ?? null;
-
-    if (!validate_csrf_token($csrfToken)) {
-
-        $message = 'Invalid or expired CSRF token.';
-        $messageType = 'error';
-
+    // Validate the form token.
+    if (!isset($_POST['csrf_token']) || !validate_csrf_token($_POST['csrf_token'])) {
+        $error = 'Invalid or expired form token. Please try again.';
     } else {
+        $result = login_user($_POST['username'] ?? '', $_POST['password'] ?? '');
 
-        $username = $_POST['username'] ?? '';
-        $password = $_POST['password'] ?? '';
-
-        $result = login_user(
-            $username,
-            $password
-        );
-
-        if (!$result['success']) {
-
-            $message = $result['message'];
-            $messageType = 'error';
-
-        } elseif ($result['mfa_required']) {
-
-            /*
-            |--------------------------------------------------------------
-            | MFA is required.
-            |--------------------------------------------------------------
-            */
-
-            header('Location: verify_otp.php');
-            exit;
-
+        if ($result['success']) {
+            if ($result['message'] === 'mfa_required') {
+                // Send OTP before verification.
+                $user = $result['user'];
+                $method = $user['mfa_method'];
+                send_otp($user['id'], $method, $user['email'], $user['phone_number']);
+                header("Location: verify_otp.php");
+                exit();
+            } else {
+                header("Location: dashboard.php");
+                exit();
+            }
         } else {
-
-            /*
-            |--------------------------------------------------------------
-            | Login successful.
-            |--------------------------------------------------------------
-            */
-
-            header('Location: dashboard.php');
-            exit;
+            $error = $result['message'];
         }
     }
 }
 
+// Handle registration.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'register') {
 
-/*
-|--------------------------------------------------------------------------
-| REGISTRATION
-|--------------------------------------------------------------------------
-*/
-
-if (
-    $_SERVER['REQUEST_METHOD'] === 'POST' &&
-    isset($_POST['register'])
-) {
-
-    $activeForm = 'register';
-
-    /*
-    |----------------------------------------------------------------------
-    | CSRF VALIDATION
-    |----------------------------------------------------------------------
-    */
-
-    $csrfToken = $_POST['csrf_token'] ?? null;
-
-    if (!validate_csrf_token($csrfToken)) {
-
-        $message = 'Invalid or expired CSRF token.';
-        $messageType = 'error';
-
+    // Validate the form token.
+    if (!isset($_POST['csrf_token']) || !validate_csrf_token($_POST['csrf_token'])) {
+        $error = 'Invalid or expired form token. Please try again.';
     } else {
-
-        $username = $_POST['reg_username'] ?? '';
-        $email = $_POST['reg_email'] ?? '';
-        $phone = $_POST['reg_phone'] ?? '';
-        $password = $_POST['reg_password'] ?? '';
-
-        $mfaEnabled = isset($_POST['mfa_enabled']);
-
-        $mfaMethod = $_POST['mfa_method'] ?? null;
-
         $result = register_user(
-            $username,
-            $email,
-            $phone,
-            $password,
-            $mfaEnabled,
-            $mfaMethod
+            $_POST['username'] ?? '',
+            $_POST['email'] ?? '',
+            $_POST['phone'] ?? '',
+            $_POST['password'] ?? ''
         );
 
         if ($result['success']) {
-
-            $message =
-                'Registration successful! Your account number is ' .
-                encode_output($result['account_number']) .
-                '. You can now log in.';
-
-            $messageType = 'success';
-            $activeForm = 'login';
-
+            $success = $result['message'];
+            $mode = 'login';
         } else {
-
-            $message = $result['message'];
-            $messageType = 'error';
+            $error = $result['message'];
         }
     }
 }
-
-
-/*
-|--------------------------------------------------------------------------
-| CSRF TOKEN
-|--------------------------------------------------------------------------
-*/
-
-$csrfToken = generate_csrf_token();
-
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
-
     <meta charset="UTF-8">
-
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
-
-    <title>SecureBank - Login</title>
-
-    <link
-        rel="stylesheet"
-        href="css/style.css"
-    >
-
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecureBank — <?= $mode === 'register' ? 'Create Account' : 'Login' ?></title>
+    <link rel="stylesheet" href="css/style.css">
 </head>
 
-<body>
+<script>
+function togglePassword(fieldId) {
+    const input = document.getElementById(fieldId);
+    const icon  = document.getElementById('icon-' + fieldId);
 
-<div class="container">
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.innerHTML = `
+            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+            <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+            <line x1="1" y1="1" x2="23" y2="23"/>
+        `;
+    } else {
+        input.type = 'password';
+        icon.innerHTML = `
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+        `;
+    }
+}
+</script>
 
-    <div class="card">
+<body class="auth-page">
+    <div class="auth-wrapper">
+        <div class="auth-panel-left">
+            <div class="auth-panel-logo">
+                <div class="auth-panel-logo-name">SecureBank<br>Inc.</div>
+                <div class="auth-panel-logo-sub">Online Banking Portal</div>
+            </div>
+            <div class="auth-panel-tagline">
+                Your security is our priority. All transactions are protected with bank-grade encryption.
+            </div>
+        </div>
+        <div class="auth-panel-right">
 
-        <h1>SecureBank</h1>
+            <?php if ($error): ?>
+                <div class="alert alert-error"><?= encode_output($error) ?></div>
+            <?php endif; ?>
+            <?php if ($success): ?>
+                <div class="alert alert-success"><?= encode_output($success) ?></div>
+            <?php endif; ?>
 
-        <p class="subtitle">
-            Secure Customer Banking Portal
-        </p>
-
-
-        <?php if ($message !== ''): ?>
-
-            <div class="message <?= encode_output($messageType) ?>">
-
-                <?= $message ?>
-
+            <div class="auth-tabs">
+                <a href="index.php" class="tab <?= $mode === 'login' ? 'active' : '' ?>">Login</a>
+                <a href="index.php?mode=register" class="tab <?= $mode === 'register' ? 'active' : '' ?>">Register</a>
             </div>
 
-        <?php endif; ?>
-
-
-        <!-- ==========================================================
-             LOGIN FORM
-        =========================================================== -->
-
-        <?php if ($activeForm === 'login'): ?>
-
-            <form method="POST" action="index.php">
-
-                <h2>Login</h2>
-
-                <!-- CSRF TOKEN -->
-
-                <input
-                    type="hidden"
-                    name="csrf_token"
-                    value="<?= encode_output($csrfToken) ?>"
-                >
-
-                <div class="form-group">
-
-                    <label for="username">
-                        Username
-                    </label>
-
-                    <input
-                        type="text"
-                        id="username"
-                        name="username"
-                        maxlength="50"
-                        required
-                    >
-
-                </div>
-
-
-                <div class="form-group">
-
-                    <label for="password">
-                        Password
-                    </label>
-
-                    <input
-                        type="password"
-                        id="password"
-                        name="password"
-                        required
-                    >
-
-                </div>
-
-
-                <button
-                    type="submit"
-                    name="login"
-                    class="btn"
-                >
-                    Login
-                </button>
-
-            </form>
-
-
-            <p class="switch-form">
-
-                Don't have an account?
-
-                <a href="index.php?register=1">
-                    Create an account
-                </a>
-
-            </p>
-
-
-        <!-- ==========================================================
-             REGISTRATION FORM
-        =========================================================== -->
-
-        <?php else: ?>
-
-            <form method="POST" action="index.php">
-
-                <h2>Create Account</h2>
-
-                <!-- CSRF TOKEN -->
-
-                <input
-                    type="hidden"
-                    name="csrf_token"
-                    value="<?= encode_output($csrfToken) ?>"
-                >
-
-
-                <div class="form-group">
-
-                    <label for="reg_username">
-                        Username
-                    </label>
-
-                    <input
-                        type="text"
-                        id="reg_username"
-                        name="reg_username"
-                        maxlength="50"
-                        required
-                    >
-
-                </div>
-
-
-                <div class="form-group">
-
-                    <label for="reg_email">
-                        Email
-                    </label>
-
-                    <input
-                        type="email"
-                        id="reg_email"
-                        name="reg_email"
-                        maxlength="100"
-                        required
-                    >
-
-                </div>
-
-
-                <div class="form-group">
-
-                    <label for="reg_phone">
-                        Phone Number
-                    </label>
-
-                    <input
-                        type="text"
-                        id="reg_phone"
-                        name="reg_phone"
-                        maxlength="20"
-                        placeholder="09XXXXXXXXX"
-                        required
-                    >
-
-                </div>
-
-
-                <div class="form-group">
-
-                    <label for="reg_password">
-                        Password
-                    </label>
-
-                    <input
-                        type="password"
-                        id="reg_password"
-                        name="reg_password"
-                        minlength="8"
-                        required
-                    >
-
-                    <small>
-                        Password must contain at least 8 characters.
-                    </small>
-
-                </div>
-
-
-                <div class="form-group">
-
-                    <label>
-                        <input
-                            type="checkbox"
-                            name="mfa_enabled"
-                            value="1"
-                            checked
-                        >
-
-                        Enable Multi-Factor Authentication
-                    </label>
-
-                </div>
-
-
-                <div class="form-group">
-
-                    <label for="mfa_method">
-                        MFA Method
-                    </label>
-
-                    <select
-                        id="mfa_method"
-                        name="mfa_method"
-                    >
-
-                        <option value="email">
-                            Email
-                        </option>
-
-                        <option value="sms">
-                            SMS
-                        </option>
-
-                    </select>
-
-                </div>
-
-
-                <button
-                    type="submit"
-                    name="register"
-                    class="btn"
-                >
-                    Register
-                </button>
-
-            </form>
-
-
-            <p class="switch-form">
-
-                Already have an account?
-
-                <a href="index.php">
-                    Login
-                </a>
-
-            </p>
-
-        <?php endif; ?>
-
-    </div>
-
-</div>
+            <?php if ($mode === 'login'): ?>
+                <!-- Login form. -->
+                <form method="POST" action="index.php" class="auth-form">
+                    <input type="hidden" name="action" value="login">
+                    <?= csrf_field() ?>
+
+                    <div class="form-group">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" name="username" placeholder="Enter your username"
+                            autocomplete="username" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <div class="input-wrapper">
+                            <input type="password" id="password" name="password" placeholder="Enter your password"
+                                autocomplete="current-password" required>
+                            <button type="button" class="toggle-password" onclick="togglePassword('password')">
+                                <svg id="icon-password" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                                    viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-full">Login</button>
+                </form>
+
+            <?php else: ?>
+                <!-- Registration form. -->
+                <form method="POST" action="index.php?mode=register" class="auth-form">
+                    <input type="hidden" name="action" value="register">
+                    <?= csrf_field() ?>
+
+                    <div class="form-group">
+                        <label for="reg_username">Username</label>
+                        <input type="text" id="reg_username" name="username" placeholder="Choose a username"
+                            autocomplete="username" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="reg_email">Email Address</label>
+                        <input type="email" id="reg_email" name="email" placeholder="your@email.com" autocomplete="email"
+                            required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="reg_phone">Phone Number</label>
+                        <input type="tel" id="reg_phone" name="phone" placeholder="+639XXXXXXXXX" autocomplete="tel">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <div class="input-wrapper">
+                            <input type="password" id="password" name="password" placeholder="Enter your password"
+                                autocomplete="current-password" required>
+                            <button type="button" class="toggle-password" onclick="togglePassword('password')">
+                                <svg id="icon-password" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                                    viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-full">Create Account</button>
+                </form>
+            <?php endif; ?>
+        </div>
 
 </body>
 

@@ -1,171 +1,43 @@
 <?php
+// Secure session cookies.
+session_set_cookie_params([
+    'lifetime' => 3600,
+    'path'     => '/',
+    'domain'   => $_SERVER['HTTP_HOST'],
+    'secure'   => isset($_SERVER['HTTPS']),
+    'httponly' => true,
+    'samesite' => 'Strict'
+]);
+session_start();
 
-declare(strict_types=1);
+$env = parse_ini_file(__DIR__ . '/.env');
 
-/*
-|--------------------------------------------------------------------------
-| SecureBank Configuration
-|--------------------------------------------------------------------------
-| Database connection, session security, CSRF, OTP, email, and Telerivet
-| configuration.
-|--------------------------------------------------------------------------
-*/
+// Database settings
+define('DB_HOST', $env['DB_HOST']);
+define('DB_USER', $env['DB_USER']);
+define('DB_PASS', $env['DB_PASS']);
+define('DB_NAME', $env['DB_NAME']);
 
-
-/*
-|--------------------------------------------------------------------------
-| DATABASE CONFIGURATION
-|--------------------------------------------------------------------------
-*/
-
-define('DB_HOST', 'localhost');
-define('DB_NAME', 'securebank_db');
-define('DB_USER', 'root');
-define('DB_PASS', '');
-
-
-/*
-|--------------------------------------------------------------------------
-| APPLICATION CONFIGURATION
-|--------------------------------------------------------------------------
-*/
-
-define('APP_NAME', 'SecureBank');
-
-
-/*
-|--------------------------------------------------------------------------
-| SECURITY CONFIGURATION
-|--------------------------------------------------------------------------
-*/
-
-define('CSRF_EXPIRATION', 1800); // 30 minutes
-
-define('OTP_EXPIRATION', 300);   // 5 minutes
-
-define('OTP_MAX_ATTEMPTS', 3);
-
-
-/*
-|--------------------------------------------------------------------------
-| EMAIL CONFIGURATION
-|--------------------------------------------------------------------------
-|
-| These are only needed if you use email MFA.
-|
-*/
-
-define('MAIL_HOST', 'smtp.gmail.com');
-
-define(
-    'MAIL_USERNAME',
-    'your-email@gmail.com'
-);
-
-define(
-    'MAIL_PASSWORD',
-    'your-app-password'
-);
-
-define('MAIL_PORT', 587);
-
-define(
-    'MAIL_FROM_ADDRESS',
-    'noreply@securebank.com'
-);
-
-define(
-    'MAIL_FROM_NAME',
-    'SecureBank'
-);
-
-
-/*
-|--------------------------------------------------------------------------
-| TELERIVET CONFIGURATION
-|--------------------------------------------------------------------------
-|
-| IMPORTANT:
-| Generate a NEW API key in Telerivet because the previous key was
-| exposed. Paste the NEW key below.
-|
-*/
-
-define(
-    'TELERIVET_PROJECT_ID',
-    'PJ32a18fde3ffab188'
-);
-
-define(
-    'TELERIVET_API_KEY',
-    '3fbbn_61wCgMFRcOzDuX6gARxTdZTYEtOsxM'
-);
-
-
-/*
-|--------------------------------------------------------------------------
-| SECURE SESSION CONFIGURATION
-|--------------------------------------------------------------------------
-*/
-
-$isHttps = (
-    isset($_SERVER['HTTPS']) &&
-    $_SERVER['HTTPS'] !== 'off' &&
-    $_SERVER['HTTPS'] !== ''
-);
-
-if (session_status() === PHP_SESSION_NONE) {
-
-    session_set_cookie_params([
-        'lifetime' => 3600,
-        'path' => '/',
-        'domain' => '',
-        'secure' => $isHttps,
-        'httponly' => true,
-        'samesite' => 'Strict'
-    ]);
-
-    session_start();
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| DATABASE CONNECTION
-|--------------------------------------------------------------------------
-*/
-
+// Open the database connection
 try {
-
-    $dsn =
-        'mysql:host=' . DB_HOST .
-        ';dbname=' . DB_NAME .
-        ';charset=utf8mb4';
-
     $pdo = new PDO(
-        $dsn,
+        "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4",
         DB_USER,
         DB_PASS,
         [
-            PDO::ATTR_ERRMODE =>
-                PDO::ERRMODE_EXCEPTION,
-
-            PDO::ATTR_DEFAULT_FETCH_MODE =>
-                PDO::FETCH_ASSOC,
-
-            PDO::ATTR_EMULATE_PREPARES =>
-                false
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
         ]
     );
-
 } catch (PDOException $e) {
-
-    error_log(
-        'Database connection error: ' .
-        $e->getMessage()
-    );
-
-    die(
-        'Unable to connect to the database.'
-    );
+    // Keep database errors out of responses
+    error_log("DB Connection Error: " . $e->getMessage());
+    die("A system error occurred. Please try again later.");
 }
+
+// Application settings
+define('APP_NAME', 'SecureBank Inc.');
+define('OTP_EXPIRY_MINUTES', 5);
+define('OTP_MAX_ATTEMPTS', 3);
+define('CSRF_EXPIRY_SECONDS', 1800);

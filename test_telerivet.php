@@ -16,61 +16,22 @@ if (
     die('Telerivet API key or Project ID is not configured in config.php.');
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| CHANGE THIS NUMBER
-|--------------------------------------------------------------------------
-|
-| Put the phone number where you want to receive the test SMS.
-|
-*/
-
 $phoneNumber = '+639233948281';
-
-
-/*
-|--------------------------------------------------------------------------
-| Test message
-|--------------------------------------------------------------------------
-*/
-
 $payload = [
     'content' => 'SecureBank Telerivet test SMS.',
     'to_number' => $phoneNumber
 ];
-
-
-/*
-|--------------------------------------------------------------------------
-| Telerivet API URL
-|--------------------------------------------------------------------------
-*/
 
 $url =
     'https://api.telerivet.com/v1/projects/' .
     rawurlencode(TELERIVET_PROJECT_ID) .
     '/messages/send';
 
-
-/*
-|--------------------------------------------------------------------------
-| Initialize CURL
-|--------------------------------------------------------------------------
-*/
-
 $ch = curl_init($url);
 
 if ($ch === false) {
     die('ERROR: Could not initialize cURL.');
 }
-
-
-/*
-|--------------------------------------------------------------------------
-| CURL options
-|--------------------------------------------------------------------------
-*/
 
 curl_setopt_array(
     $ch,
@@ -96,13 +57,6 @@ curl_setopt_array(
     ]
 );
 
-
-/*
-|--------------------------------------------------------------------------
-| Execute request
-|--------------------------------------------------------------------------
-*/
-
 $response = curl_exec($ch);
 
 $httpCode =
@@ -114,13 +68,6 @@ $httpCode =
 $curlError = curl_error($ch);
 
 curl_close($ch);
-
-
-/*
-|--------------------------------------------------------------------------
-| Display result
-|--------------------------------------------------------------------------
-*/
 
 ?>
 <!DOCTYPE html>
@@ -140,79 +87,11 @@ curl_close($ch);
         Telerivet Test
     </title>
 
-    <style>
-
-        body {
-            font-family: Arial, sans-serif;
-            background: #f3f6f9;
-            padding: 40px;
-        }
-
-        .container {
-            max-width: 800px;
-            margin: auto;
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 4px 15px rgba(0,0,0,.10);
-        }
-
-        h1 {
-            color: #1f4f7a;
-        }
-
-        .success {
-            background: #e8f7ed;
-            color: #176b35;
-            padding: 15px;
-            border-radius: 6px;
-            margin-bottom: 20px;
-        }
-
-        .error {
-            background: #fde8e8;
-            color: #a61b1b;
-            padding: 15px;
-            border-radius: 6px;
-            margin-bottom: 20px;
-        }
-
-        .info {
-            background: #eef5fb;
-            padding: 15px;
-            border-radius: 6px;
-            margin-bottom: 20px;
-        }
-
-        pre {
-            background: #222;
-            color: #eee;
-            padding: 20px;
-            border-radius: 6px;
-            overflow-x: auto;
-            white-space: pre-wrap;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        td {
-            padding: 10px;
-            border-bottom: 1px solid #ddd;
-        }
-
-        td:first-child {
-            font-weight: bold;
-            width: 200px;
-        }
-
-    </style>
+    <link rel="stylesheet" href="css/style.css">
 
 </head>
 
-<body>
+<body class="telerivet-page">
 
 <div class="container">
 
