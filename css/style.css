@@ -860,3 +860,49 @@ body.auth-page {
 @media (max-width: 720px) {
     .profile-grid { grid-template-columns: 1fr; }
 }
+
+/* MFA Notice Banner */
+.mfa-notice {
+    background: #FFF8E1;
+    border: 1px solid #F59E0B;
+    border-left: 4px solid #F59E0B;
+    border-radius: 4px;
+    margin-bottom: 22px;
+    padding: 14px 18px;
+}
+
+.mfa-notice-content {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.mfa-notice-icon {
+    font-size: 22px;
+    color: #B45309;
+    flex-shrink: 0;
+}
+
+.mfa-notice-text {
+    flex: 1;
+    font-size: 13.5px;
+    color: #78350F;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.mfa-notice-text strong { font-weight: 700; }
+.mfa-notice-text span   { opacity: 0.85; }
+
+.mfa-notice-close {
+    background: none;
+    border: none;
+    font-size: 20px;
+    color: #B45309;
+    cursor: pointer;
+    padding: 0 4px;
+    flex-shrink: 0;
+    line-height: 1;
+}
+.mfa-notice-close:hover { color: #78350F; }

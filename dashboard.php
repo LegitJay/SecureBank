@@ -7,6 +7,17 @@ require_once 'auth.php';
 require_login();
 require_mfa_verified();
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dismiss_mfa_notice'])) {
+    if (validate_csrf_token($_POST['csrf_token'] ?? '')) {
+        $_SESSION['mfa_notice_dismissed'] = true;
+        http_response_code(204);
+        exit();
+    }
+
+    http_response_code(403);
+    exit('Invalid request.');
+}
+
 // Load the current user's data
 $user = get_logged_in_user();
 if (!$user) {
@@ -44,6 +55,8 @@ $recent_transactions = $stmt->fetchAll();
 
 <body>
 
+    <input type="hidden" id="dashboardCsrf" value="<?= encode_output(generate_csrf_token()) ?>">
+
     <nav class="navbar">
         <div class="nav-brand"><img src="css/securebank_logo.svg" alt="SecureBank Logo"></div>
         <div class="nav-links">
@@ -54,6 +67,21 @@ $recent_transactions = $stmt->fetchAll();
             <a href="logout.php" class="nav-logout">Logout</a>
         </div>
     </nav>
+
+    <?php if (!$user['is_mfa_enabled'] && !isset($_SESSION['mfa_notice_dismissed'])): ?>
+        <div class="mfa-notice" id="mfaNotice">
+            <div class="mfa-notice-content">
+                <div class="mfa-notice-icon">&#9888;</div>
+                <div class="mfa-notice-text">
+                    <strong>Your account is not fully secured.</strong>
+                    <span>Enable Multi-Factor Authentication to protect your account from unauthorized access.</span>
+                </div>
+                <a href="profile.php" class="btn btn-primary"
+                    style="white-space:nowrap; font-size:13px; padding:8px 16px;">Enable MFA</a>
+                <button type="button" class="mfa-notice-close" onclick="dismissMfaNotice()">&times;</button>
+            </div>
+        </div>
+    <?php endif; ?>
 
     <div class="main-container">
 
@@ -131,6 +159,21 @@ $recent_transactions = $stmt->fetchAll();
         </div>
 
     </div>
+
+    <script>
+        function dismissMfaNotice() {
+            const notice = document.getElementById('mfaNotice');
+            if (notice) {
+                notice.remove();
+            }
+
+            fetch('dashboard.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'dismiss_mfa_notice=1&csrf_token=' + document.getElementById('dashboardCsrf').value
+            });
+        }
+    </script>
 </body>
 
 </html>
